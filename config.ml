@@ -20,7 +20,7 @@ let main =
   let packages = [
     package ~sublibs:["ipv4"; "udp"; "icmpv4"] "tcpip";
     package "ethernet";
-    package "arp-mirage";
+    package ~sublibs:["mirage"] ~min:"2.3.0" "arp";
     package "mirage-protocols";
     package "mtime";
   ] in
