@@ -49,7 +49,7 @@ module Icmp = struct
     (* Decode the received buffer (the IP header has been cut off already). *)
     match Unmarshal.of_cstruct buf with
     | Error s ->
-      Lwt.fail_with (Fmt.strf "ICMP: error parsing message from %a: %s" Ipaddr.V4.pp src s)
+      Lwt.fail_with (Fmt.str "ICMP: error parsing message from %a: %s" Ipaddr.V4.pp src s)
     | Ok (message, payload) ->
       let open Icmpv4_wire in
       (* There are two interesting cases: Time exceeded (-> send next packet),
@@ -153,7 +153,7 @@ module Main (R : Mirage_random.S) (M : Mirage_clock.MCLOCK) (Time : Mirage_time.
       (* Send packet via UDP. *)
       UDP.write ~ttl ~src_port ~dst:(Key_gen.host ()) ~dst_port udp Cstruct.empty >>= function
       | Ok () -> Lwt.return_unit
-      | Error e -> Lwt.fail_with (Fmt.strf "while sending udp frame %a" UDP.pp_error e)
+      | Error e -> Lwt.fail_with (Fmt.str "while sending udp frame %a" UDP.pp_error e)
 
   (* The main unikernel entry point. *)
   let start () () () net =
@@ -190,7 +190,7 @@ module Main (R : Mirage_random.S) (M : Mirage_clock.MCLOCK) (Time : Mirage_time.
     in
     (* Start the callback in a separate asynchronous task. *)
     Lwt.async (fun () ->
-        N.listen net ~header_size:Ethernet_wire.sizeof_ethernet ethif_listener >|= function
+        N.listen net ~header_size:Ethernet.Packet.sizeof_ethernet ethif_listener >|= function
         | Ok () -> ()
         | Error e -> Logs.err (fun m -> m "netif error %a" N.pp_error e));
     (* Send the initial UDP packet with a ttl of 1. This entails the domino

@@ -18,10 +18,9 @@ let ipv4_gateway =
 
 let main =
   let packages = [
-    package ~sublibs:["ipv4"; "udp"; "icmpv4"] "tcpip";
-    package "ethernet";
-    package ~sublibs:["mirage"] ~min:"2.3.0" "arp";
-    package "mirage-protocols";
+    package ~min:"7.0.0" ~sublibs:["ipv4"; "udp"; "icmpv4"] "tcpip";
+    package ~min:"3.0.0" "ethernet";
+    package ~sublibs:["mirage"] ~min:"3.0.0" "arp";
     package "mtime";
   ] in
   foreign
