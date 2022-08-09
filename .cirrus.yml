@@ -12,5 +12,5 @@ freebsd_task:
   configure_script: eval `opam env` && mirage configure -t hvt
   depend_script: eval `opam env` && gmake depend
   build_script: eval `opam env` && mirage build
-  unipi_artifacts:
+  traceroute_artifacts:
     path: dist/traceroute.hvt
