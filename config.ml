@@ -24,7 +24,7 @@ let main =
     package "mtime";
   ] in
   foreign
-    ~keys:[Key.abstract ipv4 ; Key.abstract ipv4_gateway ; Key.abstract host ; Key.abstract timeout]
+    ~keys:[Key.v ipv4 ; Key.v ipv4_gateway ; Key.v host ; Key.v timeout]
     ~packages
     "Unikernel.Main"
     (random @-> mclock @-> time @-> network @-> job)
