@@ -17,7 +17,7 @@ The following steps will clone this git repository and compile the unikernel:
 $ git clone https://github.com/robur-coop/traceroute.git
 $ mirage configure -t <your-favourite-target>
 $ make depend
-$ mirage build
+$ make build
 ```
 
 ## Installing as binary
