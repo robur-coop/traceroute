@@ -1,5 +1,28 @@
 open Lwt.Infix
 
+module K = struct
+  open Cmdliner
+
+  let host =
+    let doc = Arg.info ~doc:"The host to trace." ["host"] in
+    Arg.(value & (opt Mirage_runtime_network.Arg.ipv4_address
+                    (Ipaddr.V4.of_string_exn "141.1.1.1") doc))
+
+  let timeout =
+    let doc = Arg.info ~doc:"Timeout (in millisecond)" ["timeout"] in
+    Arg.(value & (opt int 1000 doc))
+
+  let ipv4 =
+    let doc = Arg.info ~doc:"IPv4 address" ["ipv4"] in
+    Arg.(value & (opt Mirage_runtime_network.Arg.ipv4
+                    (Ipaddr.V4.Prefix.of_string_exn "10.0.0.2/24") doc))
+
+  let ipv4_gateway =
+    let doc = Arg.info ~doc:"IPv4 gateway" ["ipv4-gateway"] in
+    Arg.(value & (opt Mirage_runtime_network.Arg.ipv4_address
+                    (Ipaddr.V4.of_string_exn "10.0.0.1") doc))
+end
+
 (* takes a time-to-live (int) and timestamp (int64, nanoseconda), encodes them
    into 16 bit source port and 16 bit destination port:
    - the timestamp precision is 100ns (thus, it is divided by 100)
@@ -44,7 +67,7 @@ module Icmp = struct
     Lwt.return t
 
   (* This is called for each received ICMP packet. *)
-  let input t ~src ~dst buf =
+  let input host t ~src ~dst buf =
     let open Icmpv4_packet in
     (* Decode the received buffer (the IP header has been cut off already). *)
     match Unmarshal.of_cstruct buf with
@@ -62,7 +85,7 @@ module Icmp = struct
               (* Ensure this packet matches our sent packet: the protocol is UDP
                  and the destination address is the host we're tracing *)
               pkt.Ipv4_packet.proto = Ipv4_packet.Marshal.protocol_to_int `UDP &&
-              Ipaddr.V4.compare pkt.Ipv4_packet.dst (Key_gen.host ()) = 0 ->
+              Ipaddr.V4.compare pkt.Ipv4_packet.dst host = 0 ->
             let src_port = Cstruct.BE.get_uint16 payload off
             and dst_port = Cstruct.BE.get_uint16 payload (off + 2)
             in
@@ -86,7 +109,7 @@ module Icmp = struct
                           Ipaddr.V4.pp src Ipaddr.V4.pp dst e);
             Lwt.return_unit
         end
-      | Destination_unreachable when Ipaddr.V4.compare src (Key_gen.host ()) = 0 ->
+      | Destination_unreachable when Ipaddr.V4.compare src host = 0 ->
         (* We reached the final host, and the destination port was not listened to *)
         begin match Ipv4_packet.Unmarshal.header_of_cstruct payload with
           | Ok (_, off) ->
@@ -123,7 +146,7 @@ module Main (R : Mirage_random.S) (M : Mirage_clock.MCLOCK) (Time : Mirage_time.
   let to_cancel = ref None
 
   (* Send a single packet with the given time to live. *)
-  let rec send_udp udp ttl =
+  let rec send_udp timeout host udp ttl =
     (* This is called by the ICMP handler which successfully received a
        time exceeded, thus we cancel the timeout task. *)
     (match !to_cancel with
@@ -140,9 +163,9 @@ module Main (R : Mirage_random.S) (M : Mirage_clock.MCLOCK) (Time : Mirage_time.
       *)
       let cancel =
         Lwt.catch (fun () ->
-            Time.sleep_ns (Duration.of_ms (Key_gen.timeout ())) >>= fun () ->
+            Time.sleep_ns (Duration.of_ms timeout) >>= fun () ->
             Logs.info (fun m -> m "%2d  *" ttl);
-            send_udp udp (succ ttl))
+            send_udp timeout host udp (succ ttl))
           (function Lwt.Canceled -> Lwt.return_unit | exc -> Lwt.fail exc)
       in
       (* Assign this timeout task. *)
@@ -151,15 +174,12 @@ module Main (R : Mirage_random.S) (M : Mirage_clock.MCLOCK) (Time : Mirage_time.
          and current timestamp. *)
       let src_port, dst_port = ports_of_ttl_ts ttl (M.elapsed_ns ()) in
       (* Send packet via UDP. *)
-      UDP.write ~ttl ~src_port ~dst:(Key_gen.host ()) ~dst_port udp Cstruct.empty >>= function
+      UDP.write ~ttl ~src_port ~dst:host ~dst_port udp Cstruct.empty >>= function
       | Ok () -> Lwt.return_unit
       | Error e -> Lwt.fail_with (Fmt.str "while sending udp frame %a" UDP.pp_error e)
 
   (* The main unikernel entry point. *)
-  let start () () () net =
-    let cidr = Key_gen.ipv4 ()
-    and gateway = Key_gen.ipv4_gateway ()
-    in
+  let start () () () net cidr gateway host timeout =
     let log_one = fun port ip -> log_one (M.elapsed_ns ()) port ip
     (* Create a task to wait on and a waiter to wakeup. *)
     and t, w = Lwt.task ()
@@ -169,7 +189,7 @@ module Main (R : Mirage_random.S) (M : Mirage_clock.MCLOCK) (Time : Mirage_time.
     ARP.connect eth >>= fun arp ->
     IPV4.connect ~cidr ~gateway eth arp >>= fun ip ->
     UDP.connect ip >>= fun udp ->
-    let send = send_udp udp in
+    let send = send_udp timeout host udp in
     Icmp.connect send log_one w >>= fun icmp ->
 
     (* The callback cascade for an incoming network packet. *)
@@ -182,7 +202,7 @@ module Main (R : Mirage_random.S) (M : Mirage_clock.MCLOCK) (Time : Mirage_time.
             ~udp:(fun ~src:_ ~dst:_ _ -> Lwt.return_unit)
             ~default:(fun ~proto ~src ~dst buf ->
                 match proto with
-                | 1 -> Icmp.input icmp ~src ~dst buf
+                | 1 -> Icmp.input host icmp ~src ~dst buf
                 | _ -> Lwt.return_unit)
             ip)
         ~ipv6:(fun _ -> Lwt.return_unit)
