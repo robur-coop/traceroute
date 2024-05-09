@@ -14,13 +14,11 @@ module K = struct
 
   let ipv4 =
     let doc = Arg.info ~doc:"IPv4 address" ["ipv4"] in
-    Arg.(value & (opt Mirage_runtime_network.Arg.ipv4
-                    (Ipaddr.V4.Prefix.of_string_exn "10.0.0.2/24") doc))
+    Arg.(required & (opt (some Mirage_runtime_network.Arg.ipv4) None doc))
 
   let ipv4_gateway =
     let doc = Arg.info ~doc:"IPv4 gateway" ["ipv4-gateway"] in
-    Arg.(value & (opt Mirage_runtime_network.Arg.ipv4_address
-                    (Ipaddr.V4.of_string_exn "10.0.0.1") doc))
+    Arg.(required & (opt (some Mirage_runtime_network.Arg.ipv4_address) None doc))
 end
 
 (* takes a time-to-live (int) and timestamp (int64, nanoseconda), encodes them
