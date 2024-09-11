@@ -134,7 +134,7 @@ module Icmp = struct
         Lwt.return_unit
 end
 
-module Main (R : Mirage_random.S) (M : Mirage_clock.MCLOCK) (Time : Mirage_time.S) (N : Mirage_net.S) = struct
+module Main (R : Mirage_crypto_rng_mirage.S) (M : Mirage_clock.MCLOCK) (Time : Mirage_time.S) (N : Mirage_net.S) = struct
   module ETH = Ethernet.Make(N)
   module ARP = Arp.Make(ETH)(Time)
   module IPV4 = Static_ipv4.Make(R)(M)(ETH)(ARP)
