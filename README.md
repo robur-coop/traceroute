@@ -1,7 +1,7 @@
 ## traceroute
 
 This is a MirageOS unikernel which conducts a traceroute to the given host.
-[Read the blog post.](https://hannes.nqsb.io/Posts/Traceroute)
+[Read the blog post.](https://hannes.robur.coop/Posts/Traceroute)
 
 ## Installation from source
 
