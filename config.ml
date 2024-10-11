@@ -1,4 +1,4 @@
-(* mirage >= 4.7.0 & < 4.8.0 *)
+(* mirage >= 4.8.0 & < 4.9.0 *)
 
 open Mirage
 
@@ -10,14 +10,8 @@ let main =
     package "mtime";
     package ~min:"4.5.0" ~sublibs:["network"] "mirage-runtime";
   ]
-  and runtime_args = [
-    runtime_arg ~pos:__POS__ "Unikernel.K.ipv4";
-    runtime_arg ~pos:__POS__ "Unikernel.K.ipv4_gateway";
-    runtime_arg ~pos:__POS__ "Unikernel.K.host";
-    runtime_arg ~pos:__POS__ "Unikernel.K.timeout";
-  ] in
+  in
   main
-    ~runtime_args
     ~packages
     "Unikernel.Main"
     (random @-> mclock @-> time @-> network @-> job)
