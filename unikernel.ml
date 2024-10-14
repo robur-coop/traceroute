@@ -5,20 +5,23 @@ module K = struct
 
   let host =
     let doc = Arg.info ~doc:"The host to trace." ["host"] in
-    Arg.(value & (opt Mirage_runtime_network.Arg.ipv4_address
-                    (Ipaddr.V4.of_string_exn "141.1.1.1") doc))
+    Mirage_runtime.register_arg
+      Arg.(value & (opt Mirage_runtime_network.Arg.ipv4_address
+                      (Ipaddr.V4.of_string_exn "141.1.1.1") doc))
 
   let timeout =
     let doc = Arg.info ~doc:"Timeout (in millisecond)" ["timeout"] in
-    Arg.(value & (opt int 1000 doc))
+    Mirage_runtime.register_arg Arg.(value & (opt int 1000 doc))
 
   let ipv4 =
     let doc = Arg.info ~doc:"IPv4 address" ["ipv4"] in
-    Arg.(required & (opt (some Mirage_runtime_network.Arg.ipv4) None doc))
+    Mirage_runtime.register_arg
+      Arg.(required & (opt (some Mirage_runtime_network.Arg.ipv4) None doc))
 
   let ipv4_gateway =
     let doc = Arg.info ~doc:"IPv4 gateway" ["ipv4-gateway"] in
-    Arg.(required & (opt (some Mirage_runtime_network.Arg.ipv4_address) None doc))
+    Mirage_runtime.register_arg
+      Arg.(required & (opt (some Mirage_runtime_network.Arg.ipv4_address) None doc))
 end
 
 (* takes a time-to-live (int) and timestamp (int64, nanoseconda), encodes them
@@ -177,7 +180,7 @@ module Main (R : Mirage_crypto_rng_mirage.S) (M : Mirage_clock.MCLOCK) (Time : M
       | Error e -> Lwt.fail_with (Fmt.str "while sending udp frame %a" UDP.pp_error e)
 
   (* The main unikernel entry point. *)
-  let start () () () net cidr gateway host timeout =
+  let start () () () net =
     let log_one = fun port ip -> log_one (M.elapsed_ns ()) port ip
     (* Create a task to wait on and a waiter to wakeup. *)
     and t, w = Lwt.task ()
@@ -185,9 +188,9 @@ module Main (R : Mirage_crypto_rng_mirage.S) (M : Mirage_clock.MCLOCK) (Time : M
     (* Setup network stack: ethernet, ARP, IPv4, UDP, and ICMP. *)
     ETH.connect net >>= fun eth ->
     ARP.connect eth >>= fun arp ->
-    IPV4.connect ~cidr ~gateway eth arp >>= fun ip ->
+    IPV4.connect ~cidr:(K.ipv4 ()) ~gateway:(K.ipv4_gateway ()) eth arp >>= fun ip ->
     UDP.connect ip >>= fun udp ->
-    let send = send_udp timeout host udp in
+    let send = send_udp (K.timeout ()) (K.host ()) udp in
     Icmp.connect send log_one w >>= fun icmp ->
 
     (* The callback cascade for an incoming network packet. *)
@@ -200,7 +203,7 @@ module Main (R : Mirage_crypto_rng_mirage.S) (M : Mirage_clock.MCLOCK) (Time : M
             ~udp:(fun ~src:_ ~dst:_ _ -> Lwt.return_unit)
             ~default:(fun ~proto ~src ~dst buf ->
                 match proto with
-                | 1 -> Icmp.input host icmp ~src ~dst buf
+                | 1 -> Icmp.input (K.host ()) icmp ~src ~dst buf
                 | _ -> Lwt.return_unit)
             ip)
         ~ipv6:(fun _ -> Lwt.return_unit)
