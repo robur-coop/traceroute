@@ -4,7 +4,7 @@ open Mirage
 
 let main =
   let packages = [
-    package ~min:"7.0.0" ~sublibs:["ipv4"; "udp"; "icmpv4"] "tcpip";
+    package ~min:"7.0.0" ~max:"9.0.0" ~sublibs:["ipv4"; "udp"; "icmpv4"] "tcpip";
     package ~min:"3.0.0" "ethernet";
     package ~sublibs:["mirage"] ~min:"3.0.0" "arp";
     package "mtime";
