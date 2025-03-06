@@ -1,10 +1,10 @@
-(* mirage >= 4.8.0 & < 4.9.0 *)
+(* mirage >= 4.9.0 & < 4.10.0 *)
 
 open Mirage
 
 let main =
   let packages = [
-    package ~min:"7.0.0" ~max:"9.0.0" ~sublibs:["ipv4"; "udp"; "icmpv4"] "tcpip";
+    package ~min:"9.0.0" ~max:"10.0.0" ~sublibs:["ipv4"; "udp"; "icmpv4"] "tcpip";
     package ~min:"3.0.0" "ethernet";
     package ~sublibs:["mirage"] ~min:"3.0.0" "arp";
     package "mtime";
@@ -14,8 +14,8 @@ let main =
   main
     ~packages
     "Unikernel.Main"
-    (random @-> mclock @-> time @-> network @-> job)
+    (network @-> job)
 
 let () =
   register "traceroute"
-    [ main $ default_random $ default_monotonic_clock $ default_time $ default_network ]
+    [ main $ default_network ]

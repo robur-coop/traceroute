@@ -137,11 +137,11 @@ module Icmp = struct
         Lwt.return_unit
 end
 
-module Main (R : Mirage_crypto_rng_mirage.S) (M : Mirage_clock.MCLOCK) (Time : Mirage_time.S) (N : Mirage_net.S) = struct
+module Main (N : Mirage_net.S) = struct
   module ETH = Ethernet.Make(N)
-  module ARP = Arp.Make(ETH)(Time)
-  module IPV4 = Static_ipv4.Make(R)(M)(ETH)(ARP)
-  module UDP = Udp.Make(IPV4)(R)
+  module ARP = Arp.Make(ETH)
+  module IPV4 = Static_ipv4.Make(ETH)(ARP)
+  module UDP = Udp.Make(IPV4)
 
   (* Global mutable state: the timeout task for a sent packet. *)
   let to_cancel = ref None
@@ -164,7 +164,7 @@ module Main (R : Mirage_crypto_rng_mirage.S) (M : Mirage_clock.MCLOCK) (Time : M
       *)
       let cancel =
         Lwt.catch (fun () ->
-            Time.sleep_ns (Duration.of_ms timeout) >>= fun () ->
+            Mirage_sleep.ns (Duration.of_ms timeout) >>= fun () ->
             Logs.info (fun m -> m "%2d  *" ttl);
             send_udp timeout host udp (succ ttl))
           (function Lwt.Canceled -> Lwt.return_unit | exc -> Lwt.fail exc)
@@ -173,15 +173,15 @@ module Main (R : Mirage_crypto_rng_mirage.S) (M : Mirage_clock.MCLOCK) (Time : M
       to_cancel := Some cancel;
       (* Figure out which source and destination port to use, based on ttl
          and current timestamp. *)
-      let src_port, dst_port = ports_of_ttl_ts ttl (M.elapsed_ns ()) in
+      let src_port, dst_port = ports_of_ttl_ts ttl (Mirage_mtime.elapsed_ns ()) in
       (* Send packet via UDP. *)
       UDP.write ~ttl ~src_port ~dst:host ~dst_port udp Cstruct.empty >>= function
       | Ok () -> Lwt.return_unit
       | Error e -> Lwt.fail_with (Fmt.str "while sending udp frame %a" UDP.pp_error e)
 
   (* The main unikernel entry point. *)
-  let start () () () net =
-    let log_one = fun port ip -> log_one (M.elapsed_ns ()) port ip
+  let start net =
+    let log_one = fun port ip -> log_one (Mirage_mtime.elapsed_ns ()) port ip
     (* Create a task to wait on and a waiter to wakeup. *)
     and t, w = Lwt.task ()
     in
