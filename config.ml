@@ -9,6 +9,7 @@ let main =
     package ~sublibs:["mirage"] ~min:"3.0.0" "arp";
     package "mtime";
     package ~min:"4.5.0" ~sublibs:["network"] "mirage-runtime";
+    package ~sublibs:[ "mirage" ] "charrua-client";
   ]
   in
   main

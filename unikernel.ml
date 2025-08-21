@@ -16,12 +16,12 @@ module K = struct
   let ipv4 =
     let doc = Arg.info ~doc:"IPv4 address" ["ipv4"] in
     Mirage_runtime.register_arg
-      Arg.(required & (opt (some Mirage_runtime_network.Arg.ipv4) None doc))
+      Arg.(value & (opt (some Mirage_runtime_network.Arg.ipv4) None doc))
 
   let ipv4_gateway =
     let doc = Arg.info ~doc:"IPv4 gateway" ["ipv4-gateway"] in
     Mirage_runtime.register_arg
-      Arg.(required & (opt (some Mirage_runtime_network.Arg.ipv4_address) None doc))
+      Arg.(value & (opt (some Mirage_runtime_network.Arg.ipv4_address) None doc))
 end
 
 (* takes a time-to-live (int) and timestamp (int64, nanoseconda), encodes them
@@ -140,8 +140,8 @@ end
 module Main (N : Mirage_net.S) = struct
   module ETH = Ethernet.Make(N)
   module ARP = Arp.Make(ETH)
-  module IPV4 = Static_ipv4.Make(ETH)(ARP)
-  module UDP = Udp.Make(IPV4)
+  module DHCP = Dhcp_ipv4.Make(N)(ETH)(ARP)
+  module UDP = Udp.Make(DHCP)
 
   (* Global mutable state: the timeout task for a sent packet. *)
   let to_cancel = ref None
@@ -188,7 +188,7 @@ module Main (N : Mirage_net.S) = struct
     (* Setup network stack: ethernet, ARP, IPv4, UDP, and ICMP. *)
     ETH.connect net >>= fun eth ->
     ARP.connect eth >>= fun arp ->
-    IPV4.connect ~cidr:(K.ipv4 ()) ~gateway:(K.ipv4_gateway ()) eth arp >>= fun ip ->
+    DHCP.connect ?cidr:(K.ipv4 ()) ?gateway:(K.ipv4_gateway ()) net eth arp >>= fun ip ->
     UDP.connect ip >>= fun udp ->
     let send = send_udp (K.timeout ()) (K.host ()) udp in
     Icmp.connect send log_one w >>= fun icmp ->
@@ -198,7 +198,7 @@ module Main (N : Mirage_net.S) = struct
       ETH.input
         ~arpv4:(ARP.input arp)
         ~ipv4:(
-          IPV4.input
+          DHCP.input
             ~tcp:(fun ~src:_ ~dst:_ _ -> Lwt.return_unit)
             ~udp:(fun ~src:_ ~dst:_ _ -> Lwt.return_unit)
             ~default:(fun ~proto ~src ~dst buf ->
