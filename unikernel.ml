@@ -22,6 +22,12 @@ module K = struct
     let doc = Arg.info ~doc:"IPv4 gateway" ["ipv4-gateway"] in
     Mirage_runtime.register_arg
       Arg.(value & (opt (some Mirage_runtime_network.Arg.ipv4_address) None doc))
+
+  let name =
+    let doc = Arg.info ~doc:"Name of the unikernel." ["name"] in
+    Mirage_runtime.register_arg
+      Arg.(value & (opt string "traceroute" doc))
+
 end
 
 (* takes a time-to-live (int) and timestamp (int64, nanoseconda), encodes them
@@ -188,7 +194,8 @@ module Main (N : Mirage_net.S) = struct
     (* Setup network stack: ethernet, ARP, IPv4, UDP, and ICMP. *)
     ETH.connect net >>= fun eth ->
     ARP.connect eth >>= fun arp ->
-    DHCP.connect ?cidr:(K.ipv4 ()) ?gateway:(K.ipv4_gateway ()) net eth arp >>= fun ip ->
+    let options = [ Dhcp_wire.Hostname (K.name ()) ] in
+    DHCP.connect ?cidr:(K.ipv4 ()) ?gateway:(K.ipv4_gateway ()) ~options net eth arp >>= fun ip ->
     UDP.connect ip >>= fun udp ->
     let send = send_udp (K.timeout ()) (K.host ()) udp in
     Icmp.connect send log_one w >>= fun icmp ->
