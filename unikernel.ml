@@ -28,6 +28,13 @@ module K = struct
     Mirage_runtime.register_arg
       Arg.(value & (opt string "traceroute" doc))
 
+  let hostname =
+    let parser str = Domain_name.of_string str in
+    let pp = Domain_name.pp in
+    let domain_name = Arg.conv (parser, pp) in
+    let doc = Arg.info ~doc:"Hostname of the unikernel." ["hostname"] in
+    Mirage_runtime.register_arg
+      Arg.(value & (opt domain_name (Domain_name.of_string_exn "traceroute.robur.coop") doc))
 end
 
 (* takes a time-to-live (int) and timestamp (int64, nanoseconda), encodes them
@@ -194,7 +201,10 @@ module Main (N : Mirage_net.S) = struct
     (* Setup network stack: ethernet, ARP, IPv4, UDP, and ICMP. *)
     ETH.connect net >>= fun eth ->
     ARP.connect eth >>= fun arp ->
-    let options = [ Dhcp_wire.Hostname (K.name ()) ] in
+    let options = [
+      Dhcp_wire.Hostname (K.name ());
+      Dhcp_wire.Client_fqdn ([ `Server_A ], K.hostname ())
+    ] in
     DHCP.connect ?cidr:(K.ipv4 ()) ?gateway:(K.ipv4_gateway ()) ~options net eth arp >>= fun ip ->
     UDP.connect ip >>= fun udp ->
     let send = send_udp (K.timeout ()) (K.host ()) udp in
