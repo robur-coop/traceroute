@@ -23,11 +23,6 @@ module K = struct
     Mirage_runtime.register_arg
       Arg.(value & (opt (some Mirage_runtime_network.Arg.ipv4_address) None doc))
 
-  let name =
-    let doc = Arg.info ~doc:"Name of the unikernel." ["name"] in
-    Mirage_runtime.register_arg
-      Arg.(value & (opt string "traceroute" doc))
-
   let hostname =
     let parser str = Domain_name.of_string str in
     let pp = Domain_name.pp in
@@ -202,7 +197,7 @@ module Main (N : Mirage_net.S) = struct
     ETH.connect net >>= fun eth ->
     ARP.connect eth >>= fun arp ->
     let options = [
-      Dhcp_wire.Hostname (K.name ());
+      Dhcp_wire.Hostname (Mirage_runtime.name ());
       Dhcp_wire.Client_fqdn ([ `Server_A ], K.hostname ())
     ] in
     DHCP.connect ?cidr:(K.ipv4 ()) ?gateway:(K.ipv4_gateway ()) ~options net eth arp >>= fun ip ->
