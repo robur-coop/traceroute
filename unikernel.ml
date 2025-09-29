@@ -10,16 +10,16 @@ module K = struct
                       (Ipaddr.V4.of_string_exn "141.1.1.1") doc))
 
   let timeout =
-    let doc = Arg.info ~doc:"Timeout (in millisecond)" ["timeout"] in
+    let doc = Arg.info ~doc:"Timeout (in millisecond)." ["timeout"] in
     Mirage_runtime.register_arg Arg.(value & (opt int 1000 doc))
 
   let ipv4 =
-    let doc = Arg.info ~doc:"IPv4 address" ["ipv4"] in
+    let doc = Arg.info ~doc:"IPv4 address. If not provided DHCP will be performed instead." ["ipv4"] in
     Mirage_runtime.register_arg
       Arg.(value & (opt (some Mirage_runtime_network.Arg.ipv4) None doc))
 
   let ipv4_gateway =
-    let doc = Arg.info ~doc:"IPv4 gateway" ["ipv4-gateway"] in
+    let doc = Arg.info ~doc:"IPv4 gateway. Only used when --ipv4 is provided." ["ipv4-gateway"] in
     Mirage_runtime.register_arg
       Arg.(value & (opt (some Mirage_runtime_network.Arg.ipv4_address) None doc))
 
