@@ -146,10 +146,8 @@ module Icmp = struct
 end
 
 module Main (N : Mirage_net.S) = struct
-  module ETH = Ethernet.Make(N)
-  module ARP = Arp.Make(ETH)
-  module DHCP = Dhcp_ipv4.Make(N)(ETH)(ARP)
-  module UDP = Udp.Make(DHCP)
+  module DHCP = Dhcp_ipv4.Make(N)
+  module UDP = Udp.Make(DHCP.IPv4)
 
   (* Global mutable state: the timeout task for a sent packet. *)
   let to_cancel = ref None
@@ -187,6 +185,15 @@ module Main (N : Mirage_net.S) = struct
       | Ok () -> Lwt.return_unit
       | Error e -> Lwt.fail_with (Fmt.str "while sending udp frame %a" UDP.pp_error e)
 
+  let handle_lease lease =
+    lease >|= function
+    | None ->
+      Logs.info (fun m -> m "We are not using DHCP, not configuring any log servers")
+    | Some lease ->
+      Logs.info (fun m -> m "Got log servers %a (but not doing anything with them yet!)"
+                    Fmt.(list ~sep:(any ",") Ipaddr.V4.pp)
+                    (Dhcp_wire.collect_log_servers lease))
+
   (* The main unikernel entry point. *)
   let start net =
     let log_one = fun port ip -> log_one (Mirage_mtime.elapsed_ns ()) port ip
@@ -194,38 +201,42 @@ module Main (N : Mirage_net.S) = struct
     and t, w = Lwt.task ()
     in
     (* Setup network stack: ethernet, ARP, IPv4, UDP, and ICMP. *)
-    ETH.connect net >>= fun eth ->
-    ARP.connect eth >>= fun arp ->
     let options = [
       Dhcp_wire.Hostname (Mirage_runtime.name ());
       Dhcp_wire.Client_fqdn ([ `Server_A ], K.hostname ())
     ] in
-    DHCP.connect ?cidr:(K.ipv4 ()) ?gateway:(K.ipv4_gateway ()) ~options net eth arp >>= fun ip ->
+    let lease, wakeup_lease = Lwt.wait () in
+    DHCP.connect ~registry:wakeup_lease ?cidr:(K.ipv4 ()) ?gateway:(K.ipv4_gateway ()) ~options net >>= fun (net, eth, arp, ip) ->
+    Lwt.async (fun () -> handle_lease lease);
     UDP.connect ip >>= fun udp ->
     let send = send_udp (K.timeout ()) (K.host ()) udp in
     Icmp.connect send log_one w >>= fun icmp ->
 
     (* The callback cascade for an incoming network packet. *)
     let ethif_listener =
-      ETH.input
-        ~arpv4:(ARP.input arp)
-        ~ipv4:(
-          DHCP.input
-            ~tcp:(fun ~src:_ ~dst:_ _ -> Lwt.return_unit)
-            ~udp:(fun ~src:_ ~dst:_ _ -> Lwt.return_unit)
-            ~default:(fun ~proto ~src ~dst buf ->
-                match proto with
-                | 1 -> Icmp.input (K.host ()) icmp ~src ~dst buf
-                | _ -> Lwt.return_unit)
-            ip)
+      DHCP.Ethernet.input
+        ~arpv4:(DHCP.Arp.input arp)
+        ~ipv4:(DHCP.IPv4.input
+                 ~tcp:(fun ~src:_ ~dst:_ _ -> Lwt.return_unit)
+                 ~udp:(fun ~src:_ ~dst:_ _ -> Lwt.return_unit)
+                 ~default:(fun ~proto ~src ~dst buf ->
+                     match proto with
+                     | 1 -> Icmp.input (K.host ()) icmp ~src ~dst buf
+                     | _ -> Lwt.return_unit)
+                 ip)
         ~ipv6:(fun _ -> Lwt.return_unit)
         eth
     in
+
     (* Start the callback in a separate asynchronous task. *)
-    Lwt.async (fun () ->
-        N.listen net ~header_size:Ethernet.Packet.sizeof_ethernet ethif_listener >|= function
+    let listen =
+        DHCP.Net.listen net ethif_listener
+          ~header_size:Ethernet.Packet.sizeof_ethernet
+        >|= function
         | Ok () -> ()
-        | Error e -> Logs.err (fun m -> m "netif error %a" N.pp_error e));
+        | Error e -> Logs.err (fun m -> m "netif error %a" DHCP.Net.pp_error e)
+    in
+    Lwt.async (fun () -> listen);
     (* Send the initial UDP packet with a ttl of 1. This entails the domino
        effect to receive ICMP packets, send out another UDP packet with ttl
        increased by one, etc. - until a destination unreachable is received,
