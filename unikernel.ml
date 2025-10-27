@@ -205,8 +205,9 @@ module Main (N : Mirage_net.S) = struct
       Dhcp_wire.Hostname (Mirage_runtime.name ());
       Dhcp_wire.Client_fqdn ([ `Server_A ], K.hostname ())
     ] in
+    let requests = Dhcp_wire.[ SUBNET_MASK; ROUTERS; LOG_SERVERS; ] in
     let lease, wakeup_lease = Lwt.wait () in
-    DHCP.connect ~registry:wakeup_lease ?cidr:(K.ipv4 ()) ?gateway:(K.ipv4_gateway ()) ~options net >>= fun (net, eth, arp, ip) ->
+    DHCP.connect ~registry:wakeup_lease ?cidr:(K.ipv4 ()) ?gateway:(K.ipv4_gateway ()) ~options ~requests net >>= fun (net, eth, arp, ip) ->
     Lwt.async (fun () -> handle_lease lease);
     UDP.connect ip >>= fun udp ->
     let send = send_udp (K.timeout ()) (K.host ()) udp in
