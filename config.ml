@@ -4,12 +4,13 @@ open Mirage
 
 let main =
   let packages = [
-    package ~min:"9.0.0" ~max:"10.0.0" ~sublibs:["ipv4"; "udp"; "icmpv4"] "tcpip";
+    package ~min:"9.0.0" ~max:"10.0.0" ~sublibs:["ipv4"; "udp"; "icmpv4"; "tcp"; "stack-direct"] "tcpip";
     package ~min:"3.0.0" "ethernet";
     package ~sublibs:["mirage"] ~min:"3.0.0" "arp";
     package "mtime";
     package ~min:"4.5.0" ~sublibs:["network"] "mirage-runtime";
-    package ~min:"2.1.0" ~sublibs:[ "mirage" ] "charrua-client";
+    package ~pin:"git+https://github.com/reynir/charrua.git#registry" ~min:"2.1.0" ~sublibs:[ "mirage" ] "charrua-client";
+    package ~pin:"git+https://github.com/reynir/charrua.git#registry" ~min:"2.1.0" "charrua";
   ]
   in
   main
