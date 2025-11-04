@@ -71,19 +71,9 @@ module Icmp = struct
     task_done : unit Lwt.u ;
   }
 
-  type error = unit
-
-  type ipaddr = Ipaddr.V4.t
-
-  let pp_error ppf () = assert false
-
   let connect send log task_done =
     let t = { send ; log ; task_done } in
     Lwt.return t
-
-  let disconnect t = assert false
-
-  let write t ?src ~dst ?ttl _ = assert false
 
   (* This is called for each received ICMP packet. *)
   let input t ~src ~dst buf =
@@ -156,92 +146,31 @@ module Icmp = struct
         Lwt.return_unit
 end
 
-module MakeV4
-    (Netif    : Mirage_net.S)
-    (Eth      : Ethernet.S)
-    (Arpv4    : Arp.S)
-    (Ip       : Tcpip.Ip.S with type ipaddr = Ipaddr.V4.t)
-    (Icmpv4   : Icmpv4.S)
-    (Udp      : Tcpip.Udp.S with type ipaddr = Ipaddr.V4.t)
-    (Tcp      : Tcpip.Tcp.S with type ipaddr = Ipaddr.V4.t) = struct
+module Syslog_udpv4(Udp : Tcpip.Udp.S with type ipaddr = Ipaddr.V4.t) = struct
+  let create udp ~hostname dst ?(port = 514) ?(truncate = 65535) ?facility () =
+    let dsts =
+      Printf.sprintf "while writing to %s:%d" (Ipaddr.V4.to_string dst) port
+    in
+    Logs_syslog_lwt_common.syslog_report_common
+      facility
+      hostname
+      truncate
+      Mirage_ptime.now
+      (fun s ->
+         Udp.write ~dst ~dst_port:port udp (Cstruct.of_string s) >>= function
+         | Ok _ -> Lwt.return_unit
+         | Error e ->
+           Format.(fprintf str_formatter "error %a %s, message: %s"
+                     Udp.pp_error e dsts s) ;
+           Printf.printf "%s" (Format.flush_str_formatter ());
+           Lwt.return_unit)
+      Syslog_message.encode
 
-  module UDP = Udp
-  module TCP = Tcp
-  module IP = Ip
-
-  type t = {
-    netif : Netif.t;
-    ethif : Eth.t;
-    arpv4 : Arpv4.t;
-    icmpv4 : Icmpv4.t;
-    ip : IP.t;
-    udp : Udp.t;
-    tcp : Tcp.t;
-    mutable task : unit Lwt.t option;
-  }
-
-  let pp fmt t =
-    Format.fprintf fmt "mac=%a,ip=%a" Macaddr.pp (Eth.mac t.ethif)
-      Fmt.(list ~sep:(any ", ") IP.pp_prefix) (IP.configured_ips t.ip)
-
-  let tcp { tcp; _ } = tcp
-  let udp { udp; _ } = udp
-  let ip { ip; _ } = ip
-
-  let listen t =
-    Lwt.catch (fun () ->
-        Logs.debug (fun f -> f "Establishing or updating listener for stack %a" pp t);
-        let tcp = Tcp.input t.tcp
-        and udp = Udp.input t.udp
-        and default ~proto ~src ~dst buf =
-          match proto, src, dst with
-          | 1, src, dst -> Icmpv4.input t.icmpv4 ~src ~dst buf
-          | _ -> Lwt.return_unit
-        in
-        let ethif_listener = Eth.input
-            ~arpv4:(Arpv4.input t.arpv4)
-            ~ipv4:(IP.input ~tcp ~udp ~default t.ip)
-            ~ipv6:(fun _ -> Lwt.return_unit)
-            t.ethif
-        in
-        Netif.listen t.netif ~header_size:Ethernet.Packet.sizeof_ethernet ethif_listener
-        >>= function
-        | Error e ->
-          Logs.warn (fun p -> p "%a" Netif.pp_error e) ;
-          (* XXX: error should be passed to the caller *)
-          Lwt.return_unit
-        | Ok _res ->
-          let nstat = Netif.get_stats_counters t.netif in
-          let open Mirage_net in
-          Logs.info (fun f ->
-              f "listening loop of interface %s terminated regularly:@ %Lu bytes \
-                 (%lu packets) received, %Lu bytes (%lu packets) sent@ "
-                (Macaddr.to_string (Netif.mac t.netif))
-                nstat.rx_bytes nstat.rx_pkts
-                nstat.tx_bytes nstat.tx_pkts) ;
-          Lwt.return_unit)
-      (function
-        | Lwt.Canceled ->
-          Logs.info (fun f -> f "listen of %a cancelled" pp t);
-          Lwt.return_unit
-        | e -> Lwt.fail e)
-
-  let connect netif ethif arpv4 ip icmpv4 udp tcp =
-    let t = { netif; ethif; arpv4; ip; icmpv4; tcp; udp; task = None } in
-    Logs.info (fun f -> f "MONO TCP/IP stack assembled: %a" pp t);
-    Lwt.async (fun () -> let task = listen t in t.task <- Some task; task);
-    Lwt.return t
-
-  let disconnect t =
-    Logs.info (fun f -> f "MONO TCP/IP stack disconnected: %a" pp t);
-    (match t.task with None -> () | Some task -> Lwt.cancel task);
-    Lwt.return_unit
 end
 module Main (N : Mirage_net.S) = struct
   module DHCP = Dhcp_ipv4.Make(N)
   module UDP = Udp.Make(DHCP.IPv4)
-  module TCP = Tcp.Flow.Make(DHCP.IPv4)
-  module Stack = MakeV4(DHCP.Net)(DHCP.Ethernet)(DHCP.Arp)(DHCP.IPv4)(Icmp)(UDP)(TCP)
+  module Syslog = Syslog_udpv4(UDP)
 
   (* Global mutable state: the timeout task for a sent packet. *)
   let to_cancel = ref None
@@ -282,11 +211,13 @@ module Main (N : Mirage_net.S) = struct
   let handle_lease lease =
     lease >|= function
     | None ->
-      Logs.info (fun m -> m "We are not using DHCP, not configuring any log servers")
+      []
     | Some lease ->
-      Logs.info (fun m -> m "Got log servers %a (but not doing anything with them yet!)"
+      let log_servers = Dhcp_wire.collect_log_servers lease in
+      Logs.info (fun m -> m "Got log servers %a"
                     Fmt.(list ~sep:(any ",") Ipaddr.V4.pp)
-                    (Dhcp_wire.collect_log_servers lease))
+                    (Dhcp_wire.collect_log_servers lease));
+      log_servers
 
   (* The main unikernel entry point. *)
   let start net =
@@ -303,12 +234,50 @@ module Main (N : Mirage_net.S) = struct
     let lease, wakeup_lease = Lwt.wait () in
     DHCP.connect ~registry:wakeup_lease ?cidr:(K.ipv4 ()) ?gateway:(K.ipv4_gateway ()) ~options ~requests net >>= fun (net, eth, arp, ip) ->
     (* Syslog.connect ~log_servers_from_dhcp:(lease >|= Option.map Dhcp_wire.collect_log_servers) ... *)
-    Lwt.async (fun () -> handle_lease lease);
     UDP.connect ip >>= fun udp ->
     let send = send_udp (K.timeout ()) (K.host ()) udp in
     Icmp.connect send log_one w >>= fun icmp ->
-    TCP.connect ip >>= fun tcp ->
-    Stack.connect net eth arp ip icmp udp tcp >>= fun stack ->
+    (* The callback cascade for an incoming network packet. *)
+    let ethif_listener =
+      DHCP.Ethernet.input
+        ~arpv4:(DHCP.Arp.input arp)
+        ~ipv4:(DHCP.IPv4.input
+                 ~tcp:(fun ~src:_ ~dst:_ _ -> Lwt.return_unit)
+                 ~udp:(fun ~src:_ ~dst:_ _ -> Lwt.return_unit)
+                 ~default:(fun ~proto ~src ~dst buf ->
+                     match proto with
+                     | 1 -> Icmp.input icmp ~src ~dst buf
+                     | _ -> Lwt.return_unit)
+                 ip)
+        ~ipv6:(fun _ -> Lwt.return_unit)
+        eth
+    in
+
+    (* Start the callback in a separate asynchronous task. *)
+    let listen =
+      DHCP.Net.listen net ethif_listener
+        ~header_size:Ethernet.Packet.sizeof_ethernet
+      >|= function
+      | Ok () -> ()
+      | Error e -> Logs.err (fun m -> m "netif error %a" DHCP.Net.pp_error e)
+    in
+    Lwt.async (fun () -> listen);
+    handle_lease lease >>= fun log_servers ->
+    List.iter (fun log_server ->
+        Logs.info (fun m -> m "Setting up log server %a"
+                      Ipaddr.V4.pp log_server);
+        let reporter =
+          Syslog.create udp log_server
+            ~hostname:(Mirage_runtime.name ()) ()
+        in
+        let old_reporter = Logs.reporter () in
+        (* We first use the old reporter and then the newer reporter *)
+        let report = fun src level ~over k msgf ->
+          let v = old_reporter.Logs.report src level ~over:(fun () -> ()) k msgf in
+          reporter.Logs.report src level ~over (fun () -> v) msgf
+        in
+        Logs.set_reporter { Logs.report })
+      log_servers;
     (* Send the initial UDP packet with a ttl of 1. This entails the domino
        effect to receive ICMP packets, send out another UDP packet with ttl
        increased by one, etc. - until a destination unreachable is received,

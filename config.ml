@@ -11,6 +11,7 @@ let main =
     package ~min:"4.5.0" ~sublibs:["network"] "mirage-runtime";
     package ~pin:"git+https://github.com/reynir/charrua.git#registry" ~min:"2.1.0" ~sublibs:[ "mirage" ] "charrua-client";
     package ~pin:"git+https://github.com/reynir/charrua.git#registry" ~min:"2.1.0" "charrua";
+    package ~min:"0.4.0" "logs-syslog";
   ]
   in
   main
