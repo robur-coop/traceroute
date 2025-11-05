@@ -167,8 +167,12 @@ module Syslog_udpv4(Udp : Tcpip.Udp.S with type ipaddr = Ipaddr.V4.t) = struct
       Syslog_message.encode
 
 end
-module Main (N : Mirage_net.S) = struct
-  module DHCP = Dhcp_ipv4.Make(N)
+module Main (DHCP : sig
+    module Net : Mirage_net.S
+    module Ethernet : Ethernet.S
+    module Arp : Arp.S
+    module IPv4 : Tcpip.Ip.S with type ipaddr = Ipaddr.V4.t and type prefix = Ipaddr.V4.Prefix.t
+  end)(Registry : Registry.S) = struct
   module UDP = Udp.Make(DHCP.IPv4)
   module Syslog = Syslog_udpv4(UDP)
 
@@ -209,7 +213,7 @@ module Main (N : Mirage_net.S) = struct
       | Error e -> Lwt.fail_with (Fmt.str "while sending udp frame %a" UDP.pp_error e)
 
   let handle_lease lease =
-    lease >|= function
+    Registry.value lease >|= function
     | None ->
       []
     | Some lease ->
@@ -220,20 +224,12 @@ module Main (N : Mirage_net.S) = struct
       log_servers
 
   (* The main unikernel entry point. *)
-  let start net =
+  let start (net, eth, arp, ip) registry =
     let log_one = fun port ip -> log_one (Mirage_mtime.elapsed_ns ()) port ip
     (* Create a task to wait on and a waiter to wakeup. *)
     and t, w = Lwt.task ()
     in
     (* Setup network stack: ethernet, ARP, IPv4, UDP, and ICMP. *)
-    let options = [
-      Dhcp_wire.Hostname (Mirage_runtime.name ());
-      Dhcp_wire.Client_fqdn ([ `Server_A ], K.hostname ())
-    ] in
-    let requests = Dhcp_wire.[ SUBNET_MASK; ROUTERS; LOG_SERVERS; ] in
-    let lease, wakeup_lease = Lwt.wait () in
-    DHCP.connect ~registry:wakeup_lease ?cidr:(K.ipv4 ()) ?gateway:(K.ipv4_gateway ()) ~options ~requests net >>= fun (net, eth, arp, ip) ->
-    (* Syslog.connect ~log_servers_from_dhcp:(lease >|= Option.map Dhcp_wire.collect_log_servers) ... *)
     UDP.connect ip >>= fun udp ->
     let send = send_udp (K.timeout ()) (K.host ()) udp in
     Icmp.connect send log_one w >>= fun icmp ->
@@ -262,7 +258,7 @@ module Main (N : Mirage_net.S) = struct
       | Error e -> Logs.err (fun m -> m "netif error %a" DHCP.Net.pp_error e)
     in
     Lwt.async (fun () -> listen);
-    handle_lease lease >>= fun log_servers ->
+    handle_lease registry >>= fun log_servers ->
     List.iter (fun log_server ->
         Logs.info (fun m -> m "Setting up log server %a"
                       Ipaddr.V4.pp log_server);
