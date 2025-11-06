@@ -5,31 +5,27 @@ module K = struct
 
   let host =
     let doc = Arg.info ~doc:"The host to trace." ["host"] in
-    Mirage_runtime.register_arg
-      Arg.(value & (opt Mirage_runtime_network.Arg.ipv4_address
-                      (Ipaddr.V4.of_string_exn "141.1.1.1") doc))
+    Arg.(value & (opt Mirage_runtime_network.Arg.ipv4_address
+                    (Ipaddr.V4.of_string_exn "141.1.1.1") doc))
 
   let timeout =
     let doc = Arg.info ~doc:"Timeout (in millisecond)." ["timeout"] in
-    Mirage_runtime.register_arg Arg.(value & (opt int 1000 doc))
+    Arg.(value & (opt int 1000 doc))
 
   let ipv4 =
     let doc = Arg.info ~doc:"IPv4 address. If not provided DHCP will be performed instead." ["ipv4"] in
-    Mirage_runtime.register_arg
-      Arg.(value & (opt (some Mirage_runtime_network.Arg.ipv4) None doc))
+    Arg.(value & (opt (some Mirage_runtime_network.Arg.ipv4) None doc))
 
   let ipv4_gateway =
     let doc = Arg.info ~doc:"IPv4 gateway. Only used when --ipv4 is provided." ["ipv4-gateway"] in
-    Mirage_runtime.register_arg
-      Arg.(value & (opt (some Mirage_runtime_network.Arg.ipv4_address) None doc))
+    Arg.(value & (opt (some Mirage_runtime_network.Arg.ipv4_address) None doc))
 
   let hostname =
     let parser str = Domain_name.of_string str in
     let pp = Domain_name.pp in
     let domain_name = Arg.conv (parser, pp) in
     let doc = Arg.info ~doc:"Hostname of the unikernel." ["hostname"] in
-    Mirage_runtime.register_arg
-      Arg.(value & (opt domain_name (Domain_name.of_string_exn "traceroute.robur.coop") doc))
+    Arg.(value & (opt domain_name (Domain_name.of_string_exn "traceroute.robur.coop") doc))
 end
 
 (* takes a time-to-live (int) and timestamp (int64, nanoseconda), encodes them
@@ -59,25 +55,32 @@ let ttl_ts_of_ports src_port dst_port =
   ttl, ts
 
 (* write a log line of a hop: the number, IP address, and round trip time *)
-let log_one now ttl sent ip =
+let log_one ttl sent ip =
+  let now = Mirage_mtime.elapsed_ns () in
   let now = Int64.(mul (logand (div now 100L) 0x7FFFFFFL) 100L) in
   let duration = Mtime.Span.of_uint64_ns (Int64.sub now sent) in
   Logs.info (fun m -> m "%2d  %a  %a" ttl Ipaddr.V4.pp ip Mtime.Span.pp duration)
 
 module Icmp = struct
   type t = {
-    send : int -> unit Lwt.t ;
-    log : int -> int64 -> Ipaddr.V4.t -> unit ;
+    mutable send : int -> unit Lwt.t ;
     task_done : unit Lwt.u ;
+    task : unit Lwt.t ;
+    host : Ipaddr.V4.t;
   }
 
-  let connect send log task_done =
-    let t = { send ; log ; task_done } in
+  let connect host =
+    let task, task_done = Lwt.wait () in
+    let send (_ : int) = Lwt.return_unit in
+    let t = { send ; task_done ; task; host } in
     Lwt.return t
+
+  let set_send t send = t.send <- send
+
+  let task { task; _ } = task
 
   (* This is called for each received ICMP packet. *)
   let input t ~src ~dst buf =
-    let host = K.host () in
     let open Icmpv4_packet in
     (* Decode the received buffer (the IP header has been cut off already). *)
     match Unmarshal.of_cstruct buf with
@@ -95,7 +98,7 @@ module Icmp = struct
               (* Ensure this packet matches our sent packet: the protocol is UDP
                  and the destination address is the host we're tracing *)
               pkt.Ipv4_packet.proto = Ipv4_packet.Marshal.protocol_to_int `UDP &&
-              Ipaddr.V4.compare pkt.Ipv4_packet.dst host = 0 ->
+              Ipaddr.V4.compare pkt.Ipv4_packet.dst t.host = 0 ->
             let src_port = Cstruct.BE.get_uint16 payload off
             and dst_port = Cstruct.BE.get_uint16 payload (off + 2)
             in
@@ -104,7 +107,7 @@ module Icmp = struct
                ICMP payload. *)
             let ttl, sent = ttl_ts_of_ports src_port dst_port in
             (* Log this hop. *)
-            t.log ttl sent src;
+            log_one ttl sent src;
             (* Sent out the next UDP packet with an increased ttl. *)
             let ttl' = succ ttl in
             t.send ttl'
@@ -119,7 +122,7 @@ module Icmp = struct
                           Ipaddr.V4.pp src Ipaddr.V4.pp dst e);
             Lwt.return_unit
         end
-      | Destination_unreachable when Ipaddr.V4.compare src host = 0 ->
+      | Destination_unreachable when Ipaddr.V4.compare src t.host = 0 ->
         (* We reached the final host, and the destination port was not listened to *)
         begin match Ipv4_packet.Unmarshal.header_of_cstruct payload with
           | Ok (_, off) ->
@@ -129,7 +132,7 @@ module Icmp = struct
             (* Retrieve ttl and sent timestamp. *)
             let ttl, sent = ttl_ts_of_ports src_port dst_port in
             (* Log the final hop. *)
-            t.log ttl sent src;
+            log_one ttl sent src;
             (* Wakeup the waiter task to exit the unikernel. *)
             Lwt.wakeup t.task_done ();
             Lwt.return_unit
@@ -146,7 +149,23 @@ module Icmp = struct
         Lwt.return_unit
 end
 
-module Syslog_udpv4(Udp : Tcpip.Udp.S with type ipaddr = Ipaddr.V4.t) = struct
+module Syslog_udpv4(Stack : sig
+    type t
+    module UDP : Tcpip.Udp.S with type ipaddr = Ipaddr.V4.t
+    val lease : t -> Dhcp_wire.dhcp_option list option Lwt.t
+    val udp : t -> UDP.t
+  end) = struct
+  let handle_lease stack =
+    Stack.lease stack >|= function
+    | None ->
+      []
+    | Some lease ->
+      let log_servers = Dhcp_wire.collect_log_servers lease in
+      Logs.info (fun m -> m "Got log servers %a"
+                    Fmt.(list ~sep:(any ",") Ipaddr.V4.pp)
+                    (Dhcp_wire.collect_log_servers lease));
+      log_servers
+
   let create udp ~hostname dst ?(port = 514) ?(truncate = 65535) ?facility () =
     let dsts =
       Printf.sprintf "while writing to %s:%d" (Ipaddr.V4.to_string dst) port
@@ -157,30 +176,47 @@ module Syslog_udpv4(Udp : Tcpip.Udp.S with type ipaddr = Ipaddr.V4.t) = struct
       truncate
       Mirage_ptime.now
       (fun s ->
-         Udp.write ~dst ~dst_port:port udp (Cstruct.of_string s) >>= function
+         Stack.UDP.write ~dst ~dst_port:port udp (Cstruct.of_string s) >>= function
          | Ok _ -> Lwt.return_unit
          | Error e ->
            Format.(fprintf str_formatter "error %a %s, message: %s"
-                     Udp.pp_error e dsts s) ;
+                     Stack.UDP.pp_error e dsts s) ;
            Printf.printf "%s" (Format.flush_str_formatter ());
            Lwt.return_unit)
       Syslog_message.encode
 
+  let connect stack ~hostname ?port ?truncate ?facility () =
+    let udp = Stack.udp stack in
+    handle_lease stack >>= fun log_servers ->
+    List.iter (fun dst ->
+        let reporter = create udp ~hostname dst ?port ?truncate ?facility () in
+        let old_reporter = Logs.reporter () in
+        (* We first use the old reporter and then the newer reporter *)
+        let report = fun src level ~over k msgf ->
+          let v = old_reporter.Logs.report src level ~over:(fun () -> ()) k msgf in
+          reporter.Logs.report src level ~over (fun () -> v) msgf
+        in
+        Logs.set_reporter { Logs.report })
+      log_servers;
+    Lwt.return_unit
+
 end
 module Main (DHCP : sig
+    type t
     module Net : Mirage_net.S
     module Ethernet : Ethernet.S
     module Arp : Arp.S
     module IPv4 : Tcpip.Ip.S with type ipaddr = Ipaddr.V4.t and type prefix = Ipaddr.V4.Prefix.t
-  end)(Registry : Registry.S) = struct
-  module UDP = Udp.Make(DHCP.IPv4)
-  module Syslog = Syslog_udpv4(UDP)
+    module UDP : Tcpip.Udp.S with type ipaddr = Ipaddr.V4.t
+    val udp : t -> UDP.t
+    val icmp : t -> Icmp.t
+  end) = struct
 
   (* Global mutable state: the timeout task for a sent packet. *)
   let to_cancel = ref None
 
   (* Send a single packet with the given time to live. *)
-  let rec send_udp timeout host udp ttl =
+  let rec send_udp udp timeout host ttl =
     (* This is called by the ICMP handler which successfully received a
        time exceeded, thus we cancel the timeout task. *)
     (match !to_cancel with
@@ -199,7 +235,7 @@ module Main (DHCP : sig
         Lwt.catch (fun () ->
             Mirage_sleep.ns (Duration.of_ms timeout) >>= fun () ->
             Logs.info (fun m -> m "%2d  *" ttl);
-            send_udp timeout host udp (succ ttl))
+            send_udp udp timeout host (succ ttl))
           (function Lwt.Canceled -> Lwt.return_unit | exc -> Lwt.fail exc)
       in
       (* Assign this timeout task. *)
@@ -208,76 +244,19 @@ module Main (DHCP : sig
          and current timestamp. *)
       let src_port, dst_port = ports_of_ttl_ts ttl (Mirage_mtime.elapsed_ns ()) in
       (* Send packet via UDP. *)
-      UDP.write ~ttl ~src_port ~dst:host ~dst_port udp Cstruct.empty >>= function
+      DHCP.UDP.write ~ttl ~src_port ~dst:host ~dst_port udp Cstruct.empty >>= function
       | Ok () -> Lwt.return_unit
-      | Error e -> Lwt.fail_with (Fmt.str "while sending udp frame %a" UDP.pp_error e)
-
-  let handle_lease lease =
-    Registry.value lease >|= function
-    | None ->
-      []
-    | Some lease ->
-      let log_servers = Dhcp_wire.collect_log_servers lease in
-      Logs.info (fun m -> m "Got log servers %a"
-                    Fmt.(list ~sep:(any ",") Ipaddr.V4.pp)
-                    (Dhcp_wire.collect_log_servers lease));
-      log_servers
+      | Error e -> Lwt.fail_with (Fmt.str "while sending udp frame %a" DHCP.UDP.pp_error e)
 
   (* The main unikernel entry point. *)
-  let start (net, eth, arp, ip) registry =
-    let log_one = fun port ip -> log_one (Mirage_mtime.elapsed_ns ()) port ip
-    (* Create a task to wait on and a waiter to wakeup. *)
-    and t, w = Lwt.task ()
-    in
-    (* Setup network stack: ethernet, ARP, IPv4, UDP, and ICMP. *)
-    UDP.connect ip >>= fun udp ->
-    let send = send_udp (K.timeout ()) (K.host ()) udp in
-    Icmp.connect send log_one w >>= fun icmp ->
-    (* The callback cascade for an incoming network packet. *)
-    let ethif_listener =
-      DHCP.Ethernet.input
-        ~arpv4:(DHCP.Arp.input arp)
-        ~ipv4:(DHCP.IPv4.input
-                 ~tcp:(fun ~src:_ ~dst:_ _ -> Lwt.return_unit)
-                 ~udp:(fun ~src:_ ~dst:_ _ -> Lwt.return_unit)
-                 ~default:(fun ~proto ~src ~dst buf ->
-                     match proto with
-                     | 1 -> Icmp.input icmp ~src ~dst buf
-                     | _ -> Lwt.return_unit)
-                 ip)
-        ~ipv6:(fun _ -> Lwt.return_unit)
-        eth
-    in
-
-    (* Start the callback in a separate asynchronous task. *)
-    let listen =
-      DHCP.Net.listen net ethif_listener
-        ~header_size:Ethernet.Packet.sizeof_ethernet
-      >|= function
-      | Ok () -> ()
-      | Error e -> Logs.err (fun m -> m "netif error %a" DHCP.Net.pp_error e)
-    in
-    Lwt.async (fun () -> listen);
-    handle_lease registry >>= fun log_servers ->
-    List.iter (fun log_server ->
-        Logs.info (fun m -> m "Setting up log server %a"
-                      Ipaddr.V4.pp log_server);
-        let reporter =
-          Syslog.create udp log_server
-            ~hostname:(Mirage_runtime.name ()) ()
-        in
-        let old_reporter = Logs.reporter () in
-        (* We first use the old reporter and then the newer reporter *)
-        let report = fun src level ~over k msgf ->
-          let v = old_reporter.Logs.report src level ~over:(fun () -> ()) k msgf in
-          reporter.Logs.report src level ~over (fun () -> v) msgf
-        in
-        Logs.set_reporter { Logs.report })
-      log_servers;
+  let start stack host timeout =
+    let udp = DHCP.udp stack and icmp = DHCP.icmp stack in
+    let send = send_udp udp timeout host in
+    Icmp.set_send icmp send;
     (* Send the initial UDP packet with a ttl of 1. This entails the domino
        effect to receive ICMP packets, send out another UDP packet with ttl
        increased by one, etc. - until a destination unreachable is received,
        or the hop limit is reached. *)
     send 1 >>= fun () ->
-    t
+    Icmp.task icmp
 end

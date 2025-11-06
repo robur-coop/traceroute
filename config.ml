@@ -2,63 +2,71 @@
 
 open Mirage
 
-module Registry : sig
-  type registry
-  val registry : registry typ
-end = struct
-  type registry = REGISTRY
-  let registry = typ REGISTRY
-end
+type dhcpstackv4 = STACKV4
+let dhcpstackv4 = typ STACKV4
 
 let main =
   let packages = [
     package ~min:"9.0.0" ~max:"10.0.0" ~sublibs:["ipv4"; "udp"; "icmpv4"] "tcpip";
     package "mtime";
     package ~min:"4.5.0" ~sublibs:["network"] "mirage-runtime";
-    package ~min:"0.4.0" "logs-syslog";
   ]
   in
+  let runtime_args = [
+    runtime_arg ~pos:__POS__
+      "Unikernel.K.host";
+    runtime_arg ~pos:__POS__
+      "Unikernel.K.timeout";
+  ] in
   main
-    ~packages
+    ~packages ~runtime_args
     "Unikernel.Main"
-    (network @-> Registry.registry @-> job)
+    (dhcpstackv4 @-> job)
 
-let registry (* () *) =
-  let connect _i modname = function
-    | [] ->
-      code ~pos:__POS__ {|%s.create ()|} modname
-    | _ -> assert false
-  in
-  impl
-    "Registry"
-    Registry.registry
-    ~connect
-
-let dhcp_ipv4 =
+let stack =
+  let runtime_args = [
+    runtime_arg ~pos:__POS__
+      "Unikernel.K.hostname";
+    runtime_arg ~pos:__POS__
+      "Unikernel.K.ipv4";
+    runtime_arg ~pos:__POS__
+      "Unikernel.K.ipv4_gateway";
+    runtime_arg ~pos:__POS__
+      "Unikernel.K.host";
+  ] in
   let packages = [
-    package ~pin:"git+https://github.com/reynir/charrua.git#resolve" ~min:"2.1.0" ~sublibs:[ "mirage" ] "charrua-client";
-    package ~pin:"git+https://github.com/reynir/charrua.git#resolve" ~min:"2.1.0" "charrua";
+    package ~pin:"git+https://github.com/reynir/charrua.git#registry" ~min:"2.1.0" ~sublibs:[ "mirage" ] "charrua-client";
+    package ~pin:"git+https://github.com/reynir/charrua.git#registry" ~min:"2.1.0" "charrua";
+    package ~min:"9.0.0" ~max:"10.0.0" ~sublibs:["ipv4"; "udp"; "icmpv4"] "tcpip";
   ] in
   let connect _i modname = function
-    | [ net; reg ] ->
+    | [ net; fqdn; cidr; gateway; remote_host ] ->
       code ~pos:__POS__
-        {|let options = [
-          Dhcp_wire.Hostname (Mirage_runtime.name ());
-          Dhcp_wire.Client_fqdn ([ `Server_A ], Unikernel.K.hostname ());
-        ] in
-        let requests = Dhcp_wire.[ SUBNET_MASK; ROUTERS; LOG_SERVERS ] in
-        %s.connect ~registry:%s
-          ?cidr:(Unikernel.K.ipv4 ()) ?gateway:(Unikernel.K.ipv4_gateway ())
-          ~options ~requests %s|} modname reg net
+        {|%s.connect %s ~hostname:(Mirage_runtime.name ()) ~fqdn:%s ~cidr:%s ~gateway:%s ~remote_host:%s|}
+        modname net fqdn cidr gateway remote_host
     | _ -> assert false
   in
-  impl
-    ~packages
-    ~connect
-    "Dhcp_ipv4.Make"
-    (* it's a network and more, but let's just pretend it's a network for now *)
-    (network @-> Registry.registry @-> network)
+  impl ~packages ~connect ~runtime_args
+    "Stack.Make_udpv4"
+    (network @-> dhcpstackv4)
+
+let syslog_udpv4 =
+  let packages = [
+    package ~min:"0.4.0" "logs-syslog";
+    package "charrua";
+  ] in
+  let connect _i modname = function
+    | [ stack ] ->
+      code ~pos:__POS__
+        {|%s.connect %s ~hostname:(Mirage_runtime.name ()) ()|}
+        modname stack
+    | _ -> assert false
+  in
+  impl ~packages ~connect
+    "Unikernel.Syslog_udpv4"
+    (dhcpstackv4 @-> job)
 
 let () =
   register "traceroute"
-    [ main $ (dhcp_ipv4 $ default_network $ registry) $ registry ]
+    [ syslog_udpv4 $ (stack $ default_network) ;
+      main $ (stack $ default_network) ]
