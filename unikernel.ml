@@ -82,6 +82,7 @@ module Icmp = struct
   (* This is called for each received ICMP packet. *)
   let input t ~src ~dst buf =
     let open Icmpv4_packet in
+    Logs.info (fun m -> m "icmp input");
     (* Decode the received buffer (the IP header has been cut off already). *)
     match Unmarshal.of_cstruct buf with
     | Error s ->
@@ -147,70 +148,21 @@ module Icmp = struct
                        (ty_to_string ty) Ipaddr.V4.pp src Ipaddr.V4.pp dst
                        Cstruct.hexdump_pp payload);
         Lwt.return_unit
+
+  (* Dummy definitions to satisfy Icmpv4.S *)
+  type ipaddr = Ipaddr.V4.t
+  type error = |
+  let pp_error _ppf : error -> _ = function
+    | _ -> .
+
+  let write _t ?src:_ ~dst:_ ?ttl:_ _buf =
+    Logs.warn (fun m -> m "Attempt at writing ICMP packet ignored");
+    Lwt.return (Ok ())
+
+  let disconnect _t = assert false
 end
 
-module Syslog_udpv4(Stack : sig
-    type t
-    module UDP : Tcpip.Udp.S with type ipaddr = Ipaddr.V4.t
-    val lease : t -> Dhcp_wire.dhcp_option list option Lwt.t
-    val udp : t -> UDP.t
-  end) = struct
-  let handle_lease stack =
-    Stack.lease stack >|= function
-    | None ->
-      []
-    | Some lease ->
-      let log_servers = Dhcp_wire.collect_log_servers lease in
-      Logs.info (fun m -> m "Got log servers %a"
-                    Fmt.(list ~sep:(any ",") Ipaddr.V4.pp)
-                    (Dhcp_wire.collect_log_servers lease));
-      log_servers
-
-  let create udp ~hostname dst ?(port = 514) ?(truncate = 65535) ?facility () =
-    let dsts =
-      Printf.sprintf "while writing to %s:%d" (Ipaddr.V4.to_string dst) port
-    in
-    Logs_syslog_lwt_common.syslog_report_common
-      facility
-      hostname
-      truncate
-      Mirage_ptime.now
-      (fun s ->
-         Stack.UDP.write ~dst ~dst_port:port udp (Cstruct.of_string s) >>= function
-         | Ok _ -> Lwt.return_unit
-         | Error e ->
-           Format.(fprintf str_formatter "error %a %s, message: %s"
-                     Stack.UDP.pp_error e dsts s) ;
-           Printf.printf "%s" (Format.flush_str_formatter ());
-           Lwt.return_unit)
-      Syslog_message.encode
-
-  let connect stack ~hostname ?port ?truncate ?facility () =
-    let udp = Stack.udp stack in
-    handle_lease stack >>= fun log_servers ->
-    List.iter (fun dst ->
-        let reporter = create udp ~hostname dst ?port ?truncate ?facility () in
-        let old_reporter = Logs.reporter () in
-        (* We first use the old reporter and then the newer reporter *)
-        let report = fun src level ~over k msgf ->
-          let v = old_reporter.Logs.report src level ~over:(fun () -> ()) k msgf in
-          reporter.Logs.report src level ~over (fun () -> v) msgf
-        in
-        Logs.set_reporter { Logs.report })
-      log_servers;
-    Lwt.return_unit
-
-end
-module Main (DHCP : sig
-    type t
-    module Net : Mirage_net.S
-    module Ethernet : Ethernet.S
-    module Arp : Arp.S
-    module IPv4 : Tcpip.Ip.S with type ipaddr = Ipaddr.V4.t and type prefix = Ipaddr.V4.Prefix.t
-    module UDP : Tcpip.Udp.S with type ipaddr = Ipaddr.V4.t
-    val udp : t -> UDP.t
-    val icmp : t -> Icmp.t
-  end) = struct
+module Main (Icmp : module type of Icmp) (DHCP : Tcpip.Stack.V4V6) (_ : sig end) = struct
 
   (* Global mutable state: the timeout task for a sent packet. *)
   let to_cancel = ref None
@@ -222,6 +174,7 @@ module Main (DHCP : sig
     (match !to_cancel with
      | None -> ()
      | Some t -> Lwt.cancel t ; to_cancel := None);
+    Logs.info (fun m -> m "trying to send udp");
     (* Our hop limit is 31 - 5 bit - should be sufficient for most networks. *)
     if ttl > 31 then
       Lwt.return_unit
@@ -249,8 +202,11 @@ module Main (DHCP : sig
       | Error e -> Lwt.fail_with (Fmt.str "while sending udp frame %a" DHCP.UDP.pp_error e)
 
   (* The main unikernel entry point. *)
-  let start stack host timeout =
-    let udp = DHCP.udp stack and icmp = DHCP.icmp stack in
+  let start icmp stack _ host timeout =
+    Lwt.pause () >>= fun () ->
+    Logs.app (fun m -> m "traceroute started!");
+    let host = Ipaddr.V4 host in
+    let udp = DHCP.udp stack in
     let send = send_udp udp timeout host in
     Icmp.set_send icmp send;
     (* Send the initial UDP packet with a ttl of 1. This entails the domino
@@ -258,5 +214,7 @@ module Main (DHCP : sig
        increased by one, etc. - until a destination unreachable is received,
        or the hop limit is reached. *)
     send 1 >>= fun () ->
-    Icmp.task icmp
+    Logs.app (fun m -> m "Waiting for ICMP task...");
+    Icmp.task icmp >|= fun () ->
+    Logs.app (fun m -> m "Goodbye!")
 end
