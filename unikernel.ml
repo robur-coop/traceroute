@@ -212,7 +212,6 @@ module Main (Icmp : module type of Icmp) (DHCP : Tcpip.Stack.V4V6) (_ : sig end)
        increased by one, etc. - until a destination unreachable is received,
        or the hop limit is reached. *)
     send 1 >>= fun () ->
-    Logs.app (fun m -> m "Waiting for ICMP task...");
     Icmp.task icmp >|= fun () ->
     Logs.app (fun m -> m "Goodbye!")
 end

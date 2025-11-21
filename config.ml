@@ -136,7 +136,8 @@ let direct_stackv4v6 ?group ?tcp network eth arp ipv4 ipv6 icmp =
 (* Following modified definition from dns-secondary/config.ml *)
 let syslog dhcp_lease =
   let packages = [
-    package ~sublibs:["mirage"] ~min:"0.4.0" "logs-syslog";
+    package ~sublibs:["mirage"] ~min:"0.4.0" "logs-syslog"
+      ~pin:"git+https://github.com/reynir/logs-syslog.git#reporting";
     package ~pin ~min:"2.1.0" "charrua"; (* for Dhcp_wire *)
   ] in
   let connect _ modname = function
