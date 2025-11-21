@@ -144,7 +144,6 @@ let syslog dhcp_lease =
       code ~pos:__POS__
         "Lwt.return (match Option.map Dhcp_wire.collect_log_servers %s with
          | Some (ip :: rem) ->
-           Logs.info (fun m -> m \"Using log server %%a.\" Ipaddr.V4.pp ip);
            let ip = Ipaddr.V4 ip in
            let reporter = %s.create %s ip ~hostname:(Mirage_runtime.name ()) () in
            let old_reporter = Logs.reporter () in
@@ -154,11 +153,7 @@ let syslog dhcp_lease =
              reporter.Logs.report src level ~over (fun () -> v) msgf
            in
            Logs.set_reporter { Logs.report };
-           Logs.info (fun m -> m \"Now reporting to syslog!\");
-           Logs.info (fun m -> m \"Two messages works fine?!\");
-           Logs.info (fun m -> m \"The order of the messages is 'surprising'.\");
-           Logs.info (fun m -> m \"The order of the messages is in reverse to be precise.\");
-           Logs.info (fun m -> m \"Messages logged in unikernel.ml are not sent for some reason\");
+           Logs.info (fun m -> m \"Using log server %%a.\" Ipaddr.pp ip);
            Logs.info (fun m ->
              if rem <> [] then
                m \"Ignoring additional log servers %%a\"

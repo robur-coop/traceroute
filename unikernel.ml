@@ -82,7 +82,6 @@ module Icmp = struct
   (* This is called for each received ICMP packet. *)
   let input t ~src ~dst buf =
     let open Icmpv4_packet in
-    Logs.info (fun m -> m "icmp input");
     (* Decode the received buffer (the IP header has been cut off already). *)
     match Unmarshal.of_cstruct buf with
     | Error s ->
@@ -174,7 +173,6 @@ module Main (Icmp : module type of Icmp) (DHCP : Tcpip.Stack.V4V6) (_ : sig end)
     (match !to_cancel with
      | None -> ()
      | Some t -> Lwt.cancel t ; to_cancel := None);
-    Logs.info (fun m -> m "trying to send udp");
     (* Our hop limit is 31 - 5 bit - should be sufficient for most networks. *)
     if ttl > 31 then
       Lwt.return_unit
