@@ -34,7 +34,7 @@ let main ?deps () =
 
 let pin = "git+https://github.com/reynir/charrua.git#registry"
 
-let dhcpstack =
+let dhcpstack requests =
   let runtime_args = [
     runtime_arg ~pos:__POS__
       "Unikernel.K.hostname";
@@ -55,9 +55,11 @@ let dhcpstack =
           Dhcp_wire.Client_fqdn ([ `Server_A ], %s);
           Dhcp_wire.Hostname (Mirage_runtime.name ());
         ] in
-        let requests = Dhcp_wire.[ SUBNET_MASK; ROUTERS; LOG_SERVERS; VENDOR_SPECIFIC ] in
+        let requests = Dhcp_wire.SUBNET_MASK :: Dhcp_wire.ROUTERS ::
+          List.map Dhcp_wire.int_to_option_code_exn (List.sort_uniq Int.compare %a)
+        in
         %s.connect %s ?cidr:%s ?gateway:%s ~options ~requests|}
-        fqdn modname net cidr gateway
+        fqdn Fmt.(Dump.list int) requests modname net cidr gateway
     | _ -> assert false
   in
   impl ~packages ~connect ~runtime_args
@@ -180,7 +182,11 @@ let vendor_specific =
     "Dhcp_ipv4.Proj_lease" (dhcpstackv4 @-> lease)
 
 let () =
-  let dhcpstackv4 = dhcpstack $ default_network in
+  let requests = [
+    7; (* LOG_SERVERS *)
+    43; (* VENDOR_SPECIFIC *)
+  ] in
+  let dhcpstackv4 = dhcpstack requests $ default_network in
   let net = proj_net $ dhcpstackv4 in
   let ethernet = proj_ethernet $ dhcpstackv4 in
   let stack =
