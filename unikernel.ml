@@ -200,9 +200,10 @@ module Main (Icmp : module type of Icmp) (DHCP : Tcpip.Stack.V4V6) (_ : sig end)
       | Error e -> Lwt.fail_with (Fmt.str "while sending udp frame %a" DHCP.UDP.pp_error e)
 
   (* The main unikernel entry point. *)
-  let start icmp stack _ host timeout =
+  let start icmp stack _ (message : string option) host timeout =
     Lwt.pause () >>= fun () ->
     Logs.app (fun m -> m "traceroute started!");
+    Logs.app (fun m -> m "Hello, %s" (Option.value ~default:"no one." message));
     let host = Ipaddr.V4 host in
     let udp = DHCP.udp stack in
     let send = send_udp udp timeout host in

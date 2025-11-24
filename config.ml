@@ -14,7 +14,7 @@ let icmpv4 : icmpv4 typ = icmp
 type lease = LEASE
 let lease = typ LEASE
 
-let main =
+let main ?deps () =
   let packages = [
     package ~min:"9.0.0" ~max:"10.0.0" ~sublibs:["ipv4"; "udp"; "icmpv4"] "tcpip";
     package "mtime";
@@ -28,7 +28,7 @@ let main =
       "Unikernel.K.timeout";
   ] in
   main
-    ~packages ~runtime_args
+    ~packages ~runtime_args ?deps
     "Unikernel.Main"
     (icmpv4 @-> stackv4v6 @-> syslog @-> job)
 
@@ -55,7 +55,7 @@ let dhcpstack =
           Dhcp_wire.Client_fqdn ([ `Server_A ], %s);
           Dhcp_wire.Hostname (Mirage_runtime.name ());
         ] in
-        let requests = Dhcp_wire.[ SUBNET_MASK; ROUTERS; LOG_SERVERS ] in
+        let requests = Dhcp_wire.[ SUBNET_MASK; ROUTERS; LOG_SERVERS; VENDOR_SPECIFIC ] in
         %s.connect %s ?cidr:%s ?gateway:%s ~options ~requests|}
         fqdn modname net cidr gateway
     | _ -> assert false
@@ -167,6 +167,18 @@ let syslog dhcp_lease =
     ~extra_deps:[ dep dhcp_lease ]
     (stackv4v6 @-> syslog)
 
+let vendor_specific =
+  let connect _i modname = function
+    | [ dhcpstack ] ->
+      code ~pos:__POS__
+        "%s.connect %s >|= fun lease ->
+        Option.bind lease Dhcp_wire.find_vendor_specific"
+        modname dhcpstack
+    | _ -> assert false
+  in
+  impl ~packages:proj_packages ~connect
+    "Dhcp_ipv4.Proj_lease" (dhcpstackv4 @-> lease)
+
 let () =
   let dhcpstackv4 = dhcpstack $ default_network in
   let net = proj_net $ dhcpstackv4 in
@@ -174,6 +186,7 @@ let () =
   let stack =
     direct_stackv4v6 net ethernet (proj_arpv4 $ dhcpstackv4) (proj_ipv4 $ dhcpstackv4) (create_ipv6 net ethernet) icmp
   in
+  let deps = [ dep (vendor_specific $ dhcpstackv4) ] in
 
   register "traceroute"
-    [ main $ icmp $ stack $ (syslog (proj_lease $ dhcpstackv4) $ stack) ]
+    [ main ~deps () $ icmp $ stack $ (syslog (proj_lease $ dhcpstackv4) $ stack) ]
