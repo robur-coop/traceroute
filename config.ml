@@ -59,7 +59,7 @@ let dhcpstack requests =
           List.map Dhcp_wire.int_to_option_code_exn (List.sort_uniq Int.compare %a)
         in
         %s.connect %s ?cidr:%s ?gateway:%s ~options ~requests|}
-        fqdn Fmt.(Dump.list int) requests modname net cidr gateway
+        fqdn Fmt.(Dump.list int) !requests modname net cidr gateway
     | _ -> assert false
   in
   impl ~packages ~connect ~runtime_args
@@ -87,10 +87,6 @@ let proj_arpv4 =
 let proj_ipv4 =
   impl ~packages:proj_packages ~connect:proj_connect
     "Dhcp_ipv4.Proj_ipv4" (dhcpstackv4 @-> ipv4)
-
-let proj_lease =
-  impl ~packages:proj_packages ~connect:proj_connect
-    "Dhcp_ipv4.Proj_lease" (dhcpstackv4 @-> lease)
 
 (* Not copied from mirage *)
 let icmp =
@@ -140,13 +136,12 @@ let syslog dhcp_lease =
   let packages = [
     package ~sublibs:["mirage"] ~min:"0.4.0" "logs-syslog"
       ~pin:"git+https://github.com/reynir/logs-syslog.git#reporting";
-    package ~pin ~min:"2.1.0" "charrua"; (* for Dhcp_wire *)
   ] in
   let connect _ modname = function
     | [ stack ; lease ] ->
       code ~pos:__POS__
-        "Lwt.return (match Option.map Dhcp_wire.collect_log_servers %s with
-         | Some (ip :: rem) ->
+        "Lwt.return (match %s with
+         | Some ip ->
            let ip = Ipaddr.V4 ip in
            let reporter = %s.create %s ip ~hostname:(Mirage_runtime.name ()) () in
            let old_reporter = Logs.reporter () in
@@ -157,11 +152,7 @@ let syslog dhcp_lease =
            in
            Logs.set_reporter { Logs.report };
            Logs.info (fun m -> m \"Using log server %%a.\" Ipaddr.pp ip);
-           Logs.info (fun m ->
-             if rem <> [] then
-               m \"Ignoring additional log servers %%a\"
-                 Fmt.(list ~sep:(any \" \") Ipaddr.V4.pp) rem)
-         | None | Some [] -> Logs.warn (fun m -> m \"no syslog specified, dumping on stdout\"))"
+         | None -> Logs.warn (fun m -> m \"no syslog specified, dumping on stdout\"))"
         lease modname stack
     | _ -> assert false
   in
@@ -169,7 +160,26 @@ let syslog dhcp_lease =
     ~extra_deps:[ dep dhcp_lease ]
     (stackv4v6 @-> syslog)
 
-let vendor_specific =
+let log_servers requests =
+  let connect _i modname = function
+    | [ dhcpstack ] ->
+      code ~pos:__POS__
+        "%s.connect %s >|= Option.map Dhcp_wire.collect_log_servers >|= function
+        | None | Some [] -> None
+        | Some (ip :: rem) ->
+            Logs.info (fun m ->
+             if rem <> [] then
+               m \"Ignoring additional log servers %%a\"
+                 Fmt.(list ~sep:(any \" \") Ipaddr.V4.pp) rem);
+            Some ip"
+        modname dhcpstack
+    | _ -> assert false
+  in
+  requests := 7 :: !requests;
+  impl ~packages:proj_packages ~connect
+    "Dhcp_ipv4.Proj_lease" (dhcpstackv4 @-> lease)
+
+let vendor_specific requests =
   let connect _i modname = function
     | [ dhcpstack ] ->
       code ~pos:__POS__
@@ -178,21 +188,19 @@ let vendor_specific =
         modname dhcpstack
     | _ -> assert false
   in
+  requests := 43 :: !requests;
   impl ~packages:proj_packages ~connect
     "Dhcp_ipv4.Proj_lease" (dhcpstackv4 @-> lease)
 
 let () =
-  let requests = [
-    7; (* LOG_SERVERS *)
-    43; (* VENDOR_SPECIFIC *)
-  ] in
+  let requests = ref [] in
   let dhcpstackv4 = dhcpstack requests $ default_network in
   let net = proj_net $ dhcpstackv4 in
   let ethernet = proj_ethernet $ dhcpstackv4 in
   let stack =
     direct_stackv4v6 net ethernet (proj_arpv4 $ dhcpstackv4) (proj_ipv4 $ dhcpstackv4) (create_ipv6 net ethernet) icmp
   in
-  let deps = [ dep (vendor_specific $ dhcpstackv4) ] in
+  let deps = [ dep (vendor_specific requests $ dhcpstackv4) ] in
 
   register "traceroute"
-    [ main ~deps () $ icmp $ stack $ (syslog (proj_lease $ dhcpstackv4) $ stack) ]
+    [ main ~deps () $ icmp $ stack $ (syslog (log_servers requests $ dhcpstackv4) $ stack) ]
