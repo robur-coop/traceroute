@@ -49,7 +49,7 @@ let dhcpstack requests =
     package ~min:"9.0.0" ~max:"10.0.0" ~sublibs:["ipv4"; "udp"; "icmpv4"] "tcpip";
   ] in
   let connect _i modname = function
-    | [ net; fqdn; cidr; gateway ] ->
+    | [ net; eth; arp; fqdn; cidr; gateway ] ->
       code ~pos:__POS__
         {|let options = [
           Dhcp_wire.Client_fqdn ([ `Server_A ], %s);
@@ -58,13 +58,13 @@ let dhcpstack requests =
         let requests = Dhcp_wire.SUBNET_MASK :: Dhcp_wire.ROUTERS ::
           List.map Dhcp_wire.int_to_option_code_exn (List.sort_uniq Int.compare %a)
         in
-        %s.connect %s ?cidr:%s ?gateway:%s ~options ~requests|}
-        fqdn Fmt.(Dump.list int) !requests modname net cidr gateway
+        %s.connect %s %s %s ?cidr:%s ?gateway:%s ~options ~requests|}
+        fqdn Fmt.(Dump.list int) !requests modname net eth arp cidr gateway
     | _ -> assert false
   in
   impl ~packages ~connect ~runtime_args
     "Dhcp_ipv4.Make"
-    (network @-> dhcpstackv4)
+    (network @-> ethernet @-> arpv4 @-> dhcpstackv4)
 
 let proj_connect _i modname = function
   | [ dhcpstack ] -> code ~pos:__POS__ "%s.connect %s" modname dhcpstack
@@ -75,14 +75,6 @@ let proj_packages = [ package ~pin ~min:"2.1.0" ~sublibs:["mirage"] "charrua-cli
 let proj_net =
   impl ~packages:proj_packages ~connect:proj_connect
     "Dhcp_ipv4.Proj_net" (dhcpstackv4 @-> network)
-
-let proj_ethernet =
-  impl ~packages:proj_packages ~connect:proj_connect
-    "Dhcp_ipv4.Proj_ethernet" (dhcpstackv4 @-> ethernet)
-
-let proj_arpv4 =
-  impl ~packages:proj_packages ~connect:proj_connect
-    "Dhcp_ipv4.Proj_arp" (dhcpstackv4 @-> arpv4)
 
 let proj_ipv4 =
   impl ~packages:proj_packages ~connect:proj_connect
@@ -194,11 +186,12 @@ let vendor_specific requests =
 
 let () =
   let requests = ref [] in
-  let dhcpstackv4 = dhcpstack requests $ default_network in
+  let ethernet = ethif default_network in
+  let arp = arp ethernet in
+  let dhcpstackv4 = dhcpstack requests $ default_network $ ethernet $ arp in
   let net = proj_net $ dhcpstackv4 in
-  let ethernet = proj_ethernet $ dhcpstackv4 in
   let stack =
-    direct_stackv4v6 net ethernet (proj_arpv4 $ dhcpstackv4) (proj_ipv4 $ dhcpstackv4) (create_ipv6 net ethernet) icmp
+    direct_stackv4v6 net ethernet arp (proj_ipv4 $ dhcpstackv4) (create_ipv6 net ethernet) icmp
   in
   let deps = [ dep (vendor_specific requests $ dhcpstackv4) ] in
 
