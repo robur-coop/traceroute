@@ -149,7 +149,7 @@ module Main (N : Mirage_net.S) = struct
   module ETH = Ethernet.Make(N)
   module ARP = Arp.Make(ETH)
   module DHCP = Dhcp_ipv4.Make(N)(ETH)(ARP)
-  module UDP = Udp.Make(DHCP)
+  module UDP = Udp.Make(DHCP.Ipv4)
 
   (* Global mutable state: the timeout task for a sent packet. *)
   let to_cancel = ref None
@@ -200,8 +200,8 @@ module Main (N : Mirage_net.S) = struct
       Dhcp_wire.Hostname (Mirage_runtime.name ());
       Dhcp_wire.Client_fqdn ([ `Server_A ], K.hostname ())
     ] in
-    DHCP.connect ?cidr:(K.ipv4 ()) ?gateway:(K.ipv4_gateway ()) ~options net eth arp >>= fun ip ->
-    UDP.connect ip >>= fun udp ->
+    DHCP.connect ?cidr:(K.ipv4 ()) ?gateway:(K.ipv4_gateway ()) ~options net eth arp >>= fun dhcp ->
+    UDP.connect (DHCP.ipv4 dhcp) >>= fun udp ->
     let send = send_udp (K.timeout ()) (K.host ()) udp in
     Icmp.connect send log_one w >>= fun icmp ->
 
@@ -210,14 +210,14 @@ module Main (N : Mirage_net.S) = struct
       ETH.input
         ~arpv4:(ARP.input arp)
         ~ipv4:(
-          DHCP.input
+          DHCP.Ipv4.input
             ~tcp:(fun ~src:_ ~dst:_ _ -> Lwt.return_unit)
             ~udp:(fun ~src:_ ~dst:_ _ -> Lwt.return_unit)
             ~default:(fun ~proto ~src ~dst buf ->
                 match proto with
                 | 1 -> Icmp.input (K.host ()) icmp ~src ~dst buf
                 | _ -> Lwt.return_unit)
-            ip)
+            (DHCP.ipv4 dhcp))
         ~ipv6:(fun _ -> Lwt.return_unit)
         eth
     in
