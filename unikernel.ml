@@ -149,6 +149,8 @@ module Main (N : Mirage_net.S) = struct
   module ETH = Ethernet.Make(N)
   module ARP = Arp.Make(ETH)
   module DHCP = Dhcp_ipv4.Make(N)(ETH)(ARP)
+  (* Shadow [N] as [DHCP.connect] calls [N.listen] *)
+  module N = DHCP.Net
   module UDP = Udp.Make(DHCP.Ipv4)
 
   (* Global mutable state: the timeout task for a sent packet. *)
@@ -202,6 +204,7 @@ module Main (N : Mirage_net.S) = struct
     ] in
     DHCP.connect ?cidr:(K.ipv4 ()) ?gateway:(K.ipv4_gateway ()) ~options net eth arp >>= fun dhcp ->
     UDP.connect (DHCP.ipv4 dhcp) >>= fun udp ->
+    let net = DHCP.net dhcp in
     let send = send_udp (K.timeout ()) (K.host ()) udp in
     Icmp.connect send log_one w >>= fun icmp ->
 
